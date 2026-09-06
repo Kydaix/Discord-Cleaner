@@ -107,7 +107,7 @@ button.ghost:hover {
 }
 .note {
   background: color-mix(in srgb, var(--warn) 14%, transparent);
-  border-left: 3px solid var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
   padding: 8px 12px;
   border-radius: 6px;
   margin: 12px 16px 0;
