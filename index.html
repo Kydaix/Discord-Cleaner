@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Discord Cleaner</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true"><path d="M50 12 24 38l2 2 26-26zM22 40l-8 12 12-8z" fill="currentColor"/><path d="M12 52c-1-8 3-14 9-16l7 7c-2 6-8 10-16 9z" fill="var(--accent)"/></svg>
+        <div>
+          <h1>Discord Cleaner</h1>
+          <p id="tagline" class="hint"></p>
+        </div>
+      </div>
+      <nav>
+        <button type="button" class="ghost" data-action="lang" id="lang"></button>
+        <button type="button" class="ghost" data-action="github" id="gh"></button>
+      </nav>
+    </header>
+    <main id="app"></main>
+    <footer id="bar" hidden></footer>
+    <dialog id="review"></dialog>
+  </body>
+</html>
