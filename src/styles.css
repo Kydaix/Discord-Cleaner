@@ -249,6 +249,7 @@ nav button.on svg {
 }
 .top {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -756,9 +757,37 @@ dialog li {
 }
 .actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* dashboard */
+.dashboard-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 20px;
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  background: var(--surface);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stat strong { font-size: 24px; font-weight: 650; }
+.update-status { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.update-status svg { color: var(--accent-2); }
+.card-body > .actions + .hint { margin-top: 14px; }
+.warnings { overflow-wrap: anywhere; }
+@media (max-width: 1000px) {
+  .dashboard-stats { grid-template-columns: 1fr; }
 }
 
 /* progress & result */

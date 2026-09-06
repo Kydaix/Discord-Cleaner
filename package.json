@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test:ux": "node tests/ux.cjs",
+    "test:updates": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/updates.ps1",
     "test:release": "node --test tests/release.test.mjs",
     "tauri": "tauri"
   },

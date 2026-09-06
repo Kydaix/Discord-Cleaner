@@ -12,7 +12,7 @@ Remove what Discord installs behind your back on Windows, keep what you use. A s
 | --- | --- | --- |
 | **Background service** | `DiscordSystemHelper` service and its executable under `Program Files\Common Files\Discord` | Runs as SYSTEM at boot even when Discord is closed |
 | **Startup entries** | Registry `Run` values that launch Discord through `Update.exe` | Discord starts with Windows whether you asked or not |
-| **Updater** *(optional)* | `Update.exe`, `SquirrelSetup`, `download/`, `packages/` | Auto-updates and module re-downloads stop. Reinstall Discord to update. |
+| **Updater** *(optional)* | `Update.exe`, `SquirrelSetup`, `download/`, `packages/` | Removes the automatic updater. Use the dashboard to update Discord and reapply your profile. |
 | **Optional modules** | Krisp, overlay, game detection, Rich Presence, spell check, cloud sync… each one individually | Every module is a feature you may never use, some are hundreds of MB |
 | **Languages** | Translation packs other than the ones you keep | Discord ships every language |
 | **Loose files** | `swiftshader/`, `chrome_*.pak`, `app.ico`, `debug.log` | Nothing depends on them |
@@ -21,9 +21,19 @@ Three profiles (Minimal, Balanced, Aggressive) give sane defaults; every switch 
 
 Core modules (`discord_desktop_core`, `discord_voice`, `discord_utils`) and the `en-US` locale are never offered for removal.
 
+## Dashboard and optimizations
+
+The **Dashboard** shows the installed version, installation state, estimated reclaimable space and selected profile. It checks Discord's official Stable / Windows x64 feed at launch and on demand, even if `Update.exe` was removed. The check compares application versions numerically; it does not track individual module revisions. Offline or invalid responses show an error, and a newer local version cannot be downgraded.
+
+**Install / Update / Reinstall with my profile** downloads the official installer for the checked version, verifies its Windows Authenticode signature and Discord publisher, runs the normal installer, waits for initialization, then scans and cleans with the selected profile. Discord may open during initialization and is closed for cleanup. Signature failures, installation errors or timeouts stop cleanup. Keep the cleaner open until completion; closing and overlapping operations in the same instance are disabled. No resident service is added, and existing account data is not deleted. Already completed changes are not rolled back after an error.
+
+The **Optimizations** tab contains the profiles, background/startup options, modules, languages and files. Options remain configurable when their files are absent, including before a first installation. Custom choices and the selected profile survive subsequent scans and restarts. Balanced and Aggressive retain English and the system language on a fresh installation; custom language selections also apply to newly installed language packs. Only components actually found are removed. Discord's own updates may restore components later.
+
+The installer deliberately uses its normal initialization: the [WinGet maintainers document why `--silent` can leave Discord's version database uninitialized](https://github.com/microsoft/winget-pkgs/discussions/216652).
+
 ## Install
 
-No installer. Download `DiscordCleaner.exe` from the [Releases](../../releases) page and run it. Windows 10/11, 64-bit, ~4 MB, nothing is written outside Discord's own folders. The app asks for administrator rights at launch (needed for the service and `HKLM`).
+No installer for the cleaner itself. Download `DiscordCleaner.exe` from the [Releases](../../releases) page and run it. Windows 10/11, 64-bit, ~4 MB. The app asks for administrator rights at launch (needed for the service and `HKLM`). Discord installation uses a temporary download, removed after the operation; cleanup can also update Windows startup entries and shortcuts.
 
 ## Undo
 
@@ -47,10 +57,11 @@ Checks:
 npm run test:release
 npm run build
 npm run test:ux
+npm run test:updates
 cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
 ```
 
-The UI check uses installed Microsoft Edge and simulated IPC, so it never cleans the real Discord installation. `--lib` keeps Rust tests separate from the main binary's administrator manifest.
+The UI check uses installed Microsoft Edge and simulated IPC, so it never cleans the real Discord installation. Installer checks mock network, signature and process operations in a temporary fixture; they never run a real installer. `--lib` keeps Rust tests separate from the main binary's administrator manifest.
 
 ## Releases
 
@@ -73,6 +84,7 @@ Rust dependencies are cached between builds; only `main` saves the cache. The pi
 ## How it works
 
 - `src-tauri/src/cleaner.rs`: scans `%LOCALAPPDATA%\Discord`, the service (`sc.exe`), the `Run` keys (`winreg`) and applies the plan. Deletions are resolved from a fresh scan at apply time, never from stale paths.
+- `src-tauri/src/updates.rs` and embedded `discord-update.ps1`: check the official feed, download and verify the official installer, wait for initialization, and reuse the cleaner. Windows PowerShell supplies HTTP and Authenticode support; no extra dependency or external script file is needed at runtime.
 - `src/catalog.ts`: the catalog of modules and files with their EN/FR explanations and risk level. Adding a newly discovered Discord module is a one-entry change there.
 - `src/main.ts`: the UI, vanilla TypeScript, no framework.
 

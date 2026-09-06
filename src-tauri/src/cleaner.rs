@@ -57,12 +57,15 @@ pub struct Plan {
     pub updater: bool,
     pub modules: Vec<String>,
     pub locales: Vec<String>,
+    /// When set, trim newly installed locales too. en-US is always protected.
+    #[serde(default)]
+    pub keep_locales: Option<Vec<String>>,
     pub extras: Vec<String>,
     pub autostart: bool,
     pub shortcut: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Progress {
     pub step: String,
     /// ok | warn | skip
@@ -356,7 +359,15 @@ pub fn apply(plan: &Plan, emit: impl Fn(Progress)) -> Report {
         ("extra", &current.extras, &plan.extras),
     ];
     for (kind, items, wanted) in groups {
-        for it in items.iter().filter(|it| wanted.contains(&it.id)) {
+        for it in items.iter().filter(|it| {
+            if kind == "locale" {
+                if let Some(keep) = &plan.keep_locales { return !keep.contains(&it.id); }
+            }
+            wanted.contains(&it.id)
+        }) {
+            if kind == "module" && ["discord_desktop_core", "discord_utils", "discord_voice"].contains(&it.id.as_str()) {
+                continue;
+            }
             if kind == "locale" && it.id == "en-US" {
                 continue; // Electron's fallback locale; never removable.
             }

@@ -79,6 +79,8 @@ jobs:
       - name: Run Rust unit tests
         working-directory: src-tauri
         run: cargo test --locked --lib
+      - name: Test installer guards with simulated Windows commands
+        run: npm run test:updates
       - name: Configure the release version
         shell: pwsh
         run: |

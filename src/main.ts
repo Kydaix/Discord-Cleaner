@@ -31,6 +31,7 @@ interface Plan {
   updater: boolean;
   modules: string[];
   locales: string[];
+  keep_locales: string[] | null;
   extras: string[];
   autostart: boolean;
   shortcut: boolean;
@@ -45,12 +46,12 @@ interface Report {
   warnings: string[];
 }
 
-type Page = "cleaner" | "settings" | "about";
-type View = "loading" | "notfound" | "options" | "running" | "done";
+type Page = "dashboard" | "cleaner" | "settings" | "about";
+type View = "loading" | "options" | "running" | "done" | "error";
 type Preset = PresetId | "custom";
 const PRESET_IDS: Preset[] = ["minimal", "balanced", "aggressive", "custom"];
 
-let page: Page = "cleaner";
+let page: Page = "dashboard";
 let view: View = "loading";
 let scan: Scan;
 let plan: Plan;
@@ -58,6 +59,12 @@ let preset: Preset = "balanced";
 let steps: { id: string; label: string; status?: Progress["status"]; detail?: string }[] = [];
 let report: Report | null = null;
 let version = "";
+let latest: string | null = null;
+let checking = false;
+let updateError = "";
+let operationError = "";
+let installing = false;
+let reviewInstall = false;
 
 const app = document.getElementById("app")!;
 const bar = document.getElementById("bar")!;
@@ -84,8 +91,15 @@ function fmt(bytes: number): string {
 const info = (entry: Entry) => entry[getLang()];
 const moduleEntry = (id: string) => MODULES[id] ?? UNKNOWN;
 const sum = (items: Item[]) => items.reduce((s, i) => s + i.bytes, 0);
-/** Modules the user may remove: everything the scan found minus the protected core. */
-const removable = () => scan.modules.filter((m) => !PROTECTED.includes(m.id));
+/** Keep absent options editable so the same profile can clean a fresh installation. */
+const withCatalog = (items: Item[], catalog: Record<string, Entry>) => [...items, ...Object.keys(catalog).filter((id) => !items.some((i) => i.id === id)).map((id) => ({ id, bytes: 0, paths: [] }))];
+const removable = () => withCatalog(scan.modules, MODULES).filter((m) => !PROTECTED.includes(m.id));
+const selectedLocales = () => scan.locales.filter((l) => l.id !== "en-US" && (plan.keep_locales ? !plan.keep_locales.includes(l.id) : plan.locales.includes(l.id))).map((l) => l.id);
+const installedVersion = () => scan?.latest_exe?.match(/[\\/]app-(\d+\.\d+\.\d+)[\\/]/)?.[1] ?? (scan?.latest_exe ? scan.versions[0]?.replace(/^app-/, "") : null);
+const compareVersions = (a: string, b: string) => {
+  const left = a.split('.').map(Number), right = b.split('.').map(Number);
+  return left[0] - right[0] || left[1] - right[1] || left[2] - right[2];
+};
 
 /** Everything the app remembers between launches goes through here. */
 const store = {
@@ -110,7 +124,7 @@ const store = {
 function defaultKeep(): Set<string> {
   const nav = navigator.language.toLowerCase();
   const primary = nav.split("-")[0];
-  return new Set(scan.locales.map((l) => l.id).filter((id) => id === "en-US" || id.toLowerCase() === nav || id.toLowerCase().split("-")[0] === primary));
+  return new Set(["en-US", primary, navigator.language, ...scan.locales.map((l) => l.id).filter((id) => id.toLowerCase() === nav || id.toLowerCase().split("-")[0] === primary)]);
 }
 
 function applyPreset(p: Preset) {
@@ -124,33 +138,32 @@ function applyPreset(p: Preset) {
   plan = {
     helper: true,
     run_entries: true,
-    updater: def.updater && scan.updater.paths.length > 0,
+    updater: def.updater,
     modules: removable()
       .filter((m) => MODULES[m.id] && def.risks.includes(MODULES[m.id].risk))
       .map((m) => m.id),
     locales: def.trimLocales ? scan.locales.filter((l) => !keep.has(l.id)).map((l) => l.id) : [],
-    extras: scan.extras.filter((x) => def.risks.includes(EXTRAS[x.id].risk)).map((x) => x.id),
+    keep_locales: def.trimLocales ? [...keep] : null,
+    extras: Object.keys(EXTRAS).filter((id) => def.risks.includes(EXTRAS[id].risk)),
     autostart: scan.run_entries.length > 0,
     shortcut: true,
   };
 }
 
-/** Restores the last hand-made selection, dropping whatever the current scan no longer has. */
+/** Restore intent, including options that a previous cleanup already removed. */
 function applySaved(): boolean {
   const s = store.get<Partial<Plan>>("custom");
   if (!s) return false;
-  const ids = (items: Item[]) => new Set(items.map((i) => i.id));
-  const mods = ids(removable());
-  const locs = ids(scan.locales);
-  const exts = ids(scan.extras);
+  const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
   plan = {
     helper: !!s.helper,
     run_entries: !!s.run_entries,
-    updater: !!s.updater && scan.updater.paths.length > 0,
-    modules: (s.modules ?? []).filter((id) => mods.has(id)),
-    locales: (s.locales ?? []).filter((id) => locs.has(id) && id !== "en-US"),
-    extras: (s.extras ?? []).filter((id) => exts.has(id)),
-    autostart: !!s.autostart && !!scan.latest_exe,
+    updater: !!s.updater,
+    modules: strings(s.modules).filter((id) => !PROTECTED.includes(id)),
+    locales: strings(s.locales).filter((id) => id !== "en-US"),
+    keep_locales: Array.isArray(s.keep_locales) ? [...new Set(["en-US", ...strings(s.keep_locales)])] : null,
+    extras: strings(s.extras).filter((id) => id in EXTRAS),
+    autostart: !!s.autostart,
     shortcut: !!s.shortcut || !!s.updater,
   };
   preset = "custom";
@@ -161,15 +174,16 @@ function applySaved(): boolean {
 function customize() {
   preset = "custom";
   store.set("custom", plan);
+  store.set("profile", "custom");
 }
 
 function reclaimable(): number {
   const pick = (items: Item[], ids: string[]) => sum(items.filter((i) => ids.includes(i.id)));
-  return (plan.updater ? scan.updater.bytes : 0) + pick(scan.modules, plan.modules) + pick(scan.locales, plan.locales) + pick(scan.extras, plan.extras);
+  return (plan.updater ? scan.updater.bytes : 0) + pick(scan.modules, plan.modules) + pick(scan.locales, selectedLocales()) + pick(scan.extras, plan.extras);
 }
 
 function actionCount(): number {
-  return [plan.helper, plan.run_entries, plan.updater, plan.autostart, plan.shortcut].filter(Boolean).length + plan.modules.length + plan.locales.length + plan.extras.length;
+  return [plan.helper, plan.run_entries, plan.updater && scan.updater.paths.length > 0, plan.autostart, plan.shortcut].filter(Boolean).length + scan.modules.filter((m) => plan.modules.includes(m.id)).length + selectedLocales().length + scan.extras.filter((x) => plan.extras.includes(x.id)).length;
 }
 
 function buildSteps() {
@@ -178,9 +192,9 @@ function buildSteps() {
   if (plan.helper) steps.push({ id: "helper", label: t("step_helper") });
   if (plan.run_entries) steps.push({ id: "run", label: t("step_run") });
   if (plan.updater) steps.push({ id: "updater", label: t("step_updater") });
-  for (const id of plan.modules) steps.push({ id: `module:${id}`, label: label("step_module", info(moduleEntry(id)).title) });
-  for (const id of plan.locales) steps.push({ id: `locale:${id}`, label: label("step_locale", id) });
-  for (const id of plan.extras) steps.push({ id: `extra:${id}`, label: label("step_extra", info(EXTRAS[id]).title) });
+  for (const id of scan.modules.filter((m) => plan.modules.includes(m.id)).map((m) => m.id)) steps.push({ id: `module:${id}`, label: label("step_module", info(moduleEntry(id)).title) });
+  for (const id of selectedLocales()) steps.push({ id: `locale:${id}`, label: label("step_locale", id) });
+  for (const id of scan.extras.filter((x) => plan.extras.includes(x.id)).map((x) => x.id)) steps.push({ id: `extra:${id}`, label: label("step_extra", info(EXTRAS[id]).title) });
   if (plan.shortcut) steps.push({ id: "shortcut", label: t("step_shortcut") });
   if (plan.autostart) steps.push({ id: "autostart", label: t("step_autostart") });
 }
@@ -284,15 +298,15 @@ function renderBackground(): string {
   const rows = [
     row({ attr: 'data-opt="helper"', checked: plan.helper, title: t("helper_title"), what: t("helper_what"), effect: t("helper_effect"), risk: "safe", meta: helperMeta }),
     row({ attr: 'data-opt="run_entries"', checked: plan.run_entries, title: t("run_title"), what: t("run_what"), effect: t("run_effect"), risk: "safe", meta: t("run_found", { n: scan.run_entries.length }) }),
-    row({ attr: 'data-opt="autostart"', checked: plan.autostart, title: t("autostart_title"), what: t("autostart_what"), effect: t("autostart_effect"), disabled: !scan.latest_exe }),
+    row({ attr: 'data-opt="autostart"', checked: plan.autostart, title: t("autostart_title"), what: t("autostart_what"), effect: t("autostart_effect") }),
   ].join("");
   return card("rocket", t("sec_background"), t("sec_background_hint"), `<div class="rows">${rows}</div>`);
 }
 
 function renderUpdates(): string {
   const rows = [
-    row({ attr: 'data-opt="updater"', checked: plan.updater, title: t("updater_title"), what: t("updater_what"), effect: t("updater_effect"), risk: "moderate", bytes: scan.updater.bytes, disabled: scan.updater.paths.length === 0 }),
-    row({ attr: 'data-opt="shortcut"', checked: plan.shortcut || plan.updater, title: t("shortcut_title"), what: t("shortcut_what"), effect: t("shortcut_effect"), disabled: plan.updater || !scan.latest_exe }),
+    row({ attr: 'data-opt="updater"', checked: plan.updater, title: t("updater_title"), what: t("updater_what"), effect: t("updater_effect"), risk: "moderate", bytes: scan.updater.bytes }),
+    row({ attr: 'data-opt="shortcut"', checked: plan.shortcut || plan.updater, title: t("shortcut_title"), what: t("shortcut_what"), effect: t("shortcut_effect"), disabled: plan.updater }),
   ].join("");
   return card("refresh", t("sec_updates"), t("sec_updates_hint"), `<div class="rows">${rows}</div>` + (plan.updater ? note("note", t("updater_warning")) : ""));
 }
@@ -310,7 +324,7 @@ function renderModules(): string {
         <label class="switch"><input type="checkbox" id="group-${g}" aria-label="${esc(t(`group_${g}` as Key))}" data-group="${g}" ${on === items.length ? "checked" : ""} ${on > 0 && on < items.length ? 'data-mixed="1"' : ""}><span></span></label>
         <span>${t(`group_${g}` as Key)}</span><span class="size">${fmt(sum(items))}</span>
       </div>`;
-      return header + items.map((m) => row({ attr: `data-module="${esc(m.id)}"`, checked: plan.modules.includes(m.id), title: info(moduleEntry(m.id)).title, what: info(moduleEntry(m.id)).what, effect: info(moduleEntry(m.id)).effect, risk: moduleEntry(m.id).risk, bytes: m.bytes, meta: m.id })).join("");
+      return header + items.map((m) => row({ attr: `data-module="${esc(m.id)}"`, checked: plan.modules.includes(m.id), title: info(moduleEntry(m.id)).title, what: info(moduleEntry(m.id)).what, effect: info(moduleEntry(m.id)).effect, risk: moduleEntry(m.id).risk, bytes: m.bytes, meta: m.paths.length ? m.id : `${m.id} · ${t("option_absent")}` })).join("");
     })
     .join("");
   const toolbar = `<div class="toolbar"><span class="hint">${t("modules_selected", { n: selected.length, total: items.length, size: fmt(sum(selected)) })}</span>
@@ -322,7 +336,7 @@ function renderModules(): string {
 
 function renderLocales(): string {
   const locs = scan.locales.slice().sort((a, b) => a.id.localeCompare(b.id));
-  const isKept = (l: Item) => l.id === "en-US" || !plan.locales.includes(l.id);
+  const isKept = (l: Item) => !selectedLocales().includes(l.id);
   const kept = locs.filter(isKept);
   const removed = locs.length - kept.length;
   const chip = (l: Item) => {
@@ -341,48 +355,72 @@ function renderLocales(): string {
 }
 
 function renderExtras(): string {
-  const rows = scan.extras.map((x) => row({ attr: `data-extra="${esc(x.id)}"`, checked: plan.extras.includes(x.id), title: info(EXTRAS[x.id]).title, what: info(EXTRAS[x.id]).what, effect: info(EXTRAS[x.id]).effect, risk: EXTRAS[x.id].risk, bytes: x.bytes })).join("");
+  const rows = withCatalog(scan.extras, EXTRAS).map((x) => row({ attr: `data-extra="${esc(x.id)}"`, checked: plan.extras.includes(x.id), title: info(EXTRAS[x.id]).title, what: info(EXTRAS[x.id]).what, effect: info(EXTRAS[x.id]).effect, risk: EXTRAS[x.id].risk, bytes: x.bytes, meta: x.paths.length ? undefined : t("option_absent") })).join("");
   return card("file", t("sec_extras"), t("sec_extras_hint"), `<div class="rows">${rows}</div>`);
 }
 
 function renderOptions() {
-  app.innerHTML = renderStatus() + renderPresets() + `<div class="options-grid">${renderBackground()}${renderUpdates()}</div>` + (scan.modules.length ? renderModules() : "") + (scan.locales.length ? renderLocales() : "") + (scan.extras.length ? renderExtras() : "");
+  app.innerHTML = renderPresets() + note("info", t("profile_persistent")) + `<div class="options-grid">${renderBackground()}${renderUpdates()}</div>` + renderModules() + (scan.locales.length ? renderLocales() : note("info", t("first_locales"))) + renderExtras();
   app.querySelectorAll<HTMLInputElement>("[data-mixed]").forEach((el) => (el.indeterminate = true));
   bar.hidden = false;
   bar.innerHTML = `<div><div class="bar-left" role="status">${icon("db", 18)}<strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong><span>·</span><span>${t("bar_actions", { n: actionCount() })}</span></div><p class="hint">${t("bar_hint")}</p></div>
-    <button type="button" id="review-button" class="primary" data-action="clean" ${actionCount() === 0 ? "disabled" : ""}>${icon("sparkle", 16)}${t("clean")}</button>`;
+    <button type="button" id="review-button" class="primary" data-action="${scan.latest_exe ? "clean" : "dashboard"}" ${scan.latest_exe && actionCount() === 0 ? "disabled" : ""}>${icon("sparkle", 16)}${t(scan.latest_exe ? "clean" : "go_install")}</button>`;
 }
 
-function renderReview() {
+function renderDashboard(): string {
+  const installed = installedVersion();
+  const newer = !!(latest && installed && compareVersions(latest, installed) > 0);
+  const ahead = !!(latest && installed && compareVersions(installed, latest) > 0);
+  const status: Key = checking ? "update_checking" : updateError ? "update_failed" : !latest ? "update_unknown" : !installed ? "update_not_installed" : newer ? "update_available" : ahead ? "update_ahead" : "update_current";
+  return `<div class="dashboard-stats">
+    <div class="stat"><span class="hint">${t("installed_version")}</span><strong>${esc(installed ?? t("service_absent"))}</strong><span class="chip">Stable · Windows x64</span></div>
+    <div class="stat"><span class="hint">${t("dashboard_space")}</span><strong>${fmt(reclaimable())}</strong><span class="hint">${t("dashboard_estimate")}</span></div>
+    <div class="stat"><span class="hint">${t("presets")}</span><strong>${t(`preset_${preset}` as Key)}</strong><button type="button" class="small" data-page="cleaner">${t("configure_profile")}</button></div>
+  </div>` + card("refresh", t("discord_updates"), t("discord_updates_hint"),
+    `<div class="update-status" role="status">${icon(newer ? "refresh" : "info")}<div><h2>${t(status)}</h2><p class="hint">${latest ? t("latest_version", { version: latest }) : t("update_source")}</p></div></div>
+    ${updateError ? `<p class="warnings mono" role="alert">${esc(updateError)}</p>` : ""}
+    <div class="actions"><button type="button" id="check-update" data-action="check-update" ${checking ? "disabled" : ""}>${t("check_updates")}</button>
+    <button type="button" id="install-discord" class="primary" data-action="install" ${!latest || checking || updateError || ahead ? "disabled" : ""}>${t(!installed ? "install_discord" : newer ? "update_discord" : "repair_discord")}</button></div>
+    <p class="hint">${t("install_profile_hint", { profile: t(`preset_${preset}` as Key) })}</p><p class="hint">${t("update_source")}</p>`) +
+    (scan.latest_exe ? renderStatus() : note("info", t("notfound_title"))) +
+    `<div class="actions"><button type="button" data-action="rescan">${t("rescan")}</button>${scan.latest_exe ? `<button type="button" data-action="launch">${t("launch")}</button>` : ""}</div>`;
+}
+
+function renderReview(install = false) {
+  reviewInstall = install;
   const lines: string[] = [t("review_kill")];
   if (plan.helper) lines.push(t("review_helper"));
   if (plan.run_entries) lines.push(t("review_run"));
   if (plan.updater) lines.push(t("review_updater"));
-  if (plan.modules.length) lines.push(t("review_modules", { n: plan.modules.length }));
-  if (plan.locales.length) lines.push(t("review_locales", { n: plan.locales.length }));
-  if (plan.extras.length) lines.push(t("review_extras", { n: plan.extras.length }));
+  const modules = install ? plan.modules : scan.modules.filter((m) => plan.modules.includes(m.id)).map((m) => m.id);
+  const locales = selectedLocales();
+  const extras = install ? plan.extras : scan.extras.filter((x) => plan.extras.includes(x.id)).map((x) => x.id);
+  if (modules.length) lines.push(t("review_modules", { n: modules.length }));
+  if (install && plan.keep_locales) lines.push(t("review_keep_locales", { list: plan.keep_locales.join(", ") }));
+  else if (locales.length) lines.push(t("review_locales", { n: locales.length }));
+  if (extras.length) lines.push(t("review_extras", { n: extras.length }));
   if (plan.shortcut) lines.push(t("review_shortcut"));
   if (plan.autostart) lines.push(t("review_autostart"));
   dialog.setAttribute("aria-labelledby", "review-title");
-  dialog.innerHTML = `<h2 id="review-title">${t("review_title")}</h2>
-    <p class="hint">${t("review_body")}</p>
+  dialog.innerHTML = `<h2 id="review-title">${t(install ? "install_review_title" : "review_title")}</h2>
+    <p class="hint">${install ? t("install_review_body", { version: latest!, profile: t(`preset_${preset}` as Key) }) : t("review_body")}</p>
     ${plan.updater ? note("note", t("updater_warning")) : ""}
     <ul>${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
-    <p><strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong></p>
-    <div class="actions"><button type="button" data-action="cancel">${t("cancel")}</button><button type="button" class="primary" data-action="confirm">${icon("sparkle", 16)}${t("confirm")}</button></div>`;
+    <p><strong>${install ? t("install_initialization") : t("bar_reclaim", { size: fmt(reclaimable()) })}</strong></p>
+    <div class="actions"><button type="button" data-action="cancel">${t("cancel")}</button><button type="button" class="primary" data-action="confirm">${icon("sparkle", 16)}${t(install ? "install_confirm" : "confirm")}</button></div>`;
   dialog.showModal();
 }
 
 function renderRunning(): string {
   const list = steps.map((s) => `<li class="${s.status ?? "pending"}"><span class="dot"></span><span>${esc(s.label)}</span>${s.detail ? `<small class="mono">${esc(s.detail)}</small>` : ""}</li>`).join("");
-  return card("rocket", t("running_title"), "", `<ul class="steps">${list}</ul>`);
+  return card("rocket", t(installing ? "install_running" : "running_title"), t("operation_keep_open"), `<ul class="steps" role="status">${list}</ul>`);
 }
 
 function renderDone(): string {
   const r = report!;
   return card(
     "check",
-    t("done_title"),
+    t(installing ? "install_done" : "done_title"),
     t("done_note"),
     `<p class="big">${t("done_freed", { size: fmt(r.freed) })}</p>
     ${r.warnings.length ? note("note", t("done_warnings")) + `<ul class="warnings mono">${r.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
@@ -439,18 +477,24 @@ function render() {
 function renderPage() {
   document.querySelectorAll<HTMLElement>("[data-t]").forEach((el) => (el.textContent = t(el.dataset.t as Key)));
   document.querySelectorAll<HTMLElement>("[data-page]").forEach((el) => {
+    if (el instanceof HTMLButtonElement) el.disabled = view === "running";
     el.classList.toggle("on", el.dataset.page === page);
     if (el.dataset.page === page) el.setAttribute("aria-current", "page");
     else el.removeAttribute("aria-current");
   });
   const head: Record<Page, [string, string]> = {
-    cleaner: ["Discord Cleaner", t("subtitle")],
+    dashboard: [t("nav_dashboard"), t("nav_dashboard_sub")],
+    cleaner: [t("nav_cleaner"), t("nav_cleaner_sub")],
     settings: [t("nav_settings"), t("nav_settings_sub")],
     about: [t("nav_about"), t("nav_about_sub")],
   };
   title.textContent = head[page][0];
   subtitle.textContent = head[page][1];
   bar.hidden = true;
+  if (view === "running") {
+    app.innerHTML = renderRunning();
+    return;
+  }
   if (page === "settings") {
     app.innerHTML = renderSettings();
     return;
@@ -463,17 +507,15 @@ function renderPage() {
     case "loading":
       app.innerHTML = `<div class="center"><div class="spinner"></div><p>${t("scanning")}</p></div>`;
       break;
-    case "notfound":
-      app.innerHTML = `<div class="center"><h2>${t("notfound_title")}</h2><p class="hint">${t("notfound_body", { path: "%LOCALAPPDATA%\\Discord" })}</p><button type="button" class="primary" data-action="rescan">${t("rescan")}</button></div>`;
-      break;
     case "options":
-      renderOptions();
-      break;
-    case "running":
-      app.innerHTML = renderRunning();
+      if (page === "dashboard") app.innerHTML = renderDashboard();
+      else renderOptions();
       break;
     case "done":
       app.innerHTML = renderDone();
+      break;
+    case "error":
+      app.innerHTML = card("alert", t("operation_failed"), t("operation_retry"), `<p class="warnings mono" role="alert">${esc(operationError)}</p><div class="actions"><button type="button" data-action="rescan">${t("rescan")}</button></div>`);
       break;
   }
 }
@@ -483,37 +525,69 @@ function renderPage() {
 async function load() {
   view = "loading";
   render();
-  scan = await invoke<Scan>("scan");
-  if (!scan.root) {
-    view = "notfound";
-  } else {
+  try {
+    scan = await invoke<Scan>("scan");
     applyPreset(defaultPreset());
     view = "options";
+  } catch (e) {
+    operationError = String(e);
+    view = "error";
   }
   render();
 }
 
-async function runPlan() {
+async function checkUpdate() {
+  if (checking || view === "running") return;
+  checking = true;
+  updateError = "";
+  render();
+  try {
+    const result = await invoke<{ latest: string }>("check_discord_update");
+    if (!/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(result.latest)) throw new Error(t("update_invalid"));
+    latest = result.latest;
+  } catch (e) {
+    latest = null;
+    updateError = String(e);
+  } finally {
+    checking = false;
+    render();
+  }
+}
+
+async function runPlan(install = false) {
+  if (view === "running" || (install && (!latest || checking || updateError))) return;
+  installing = install;
+  operationError = "";
   buildSteps();
+  if (install) steps = ["download", "signature", "kill", "install"].map((id) => ({ id, label: t(`step_${id}` as Key) }));
   view = "running";
   render();
-  const un = await listen<Progress>("progress", (ev) => {
-    const s = steps.find((x) => x.id === ev.payload.step);
-    if (s) {
-      s.status = ev.payload.status;
-      s.detail = ev.payload.status === "ok" ? "" : ev.payload.detail;
-    }
-    render();
-  });
+  let un: (() => void) | undefined;
   try {
-    report = await invoke<Report>("apply", { plan });
+    un = await listen<Progress>("progress", (ev) => {
+      let s = steps.find((x) => x.id === ev.payload.step);
+      if (!s) {
+        const [kind, id] = ev.payload.step.split(":");
+        const key = `step_${kind}` as Key;
+        const known = ["kill", "helper", "run", "updater", "module", "locale", "extra", "shortcut", "autostart", "error"].includes(kind);
+        const label = known ? t(key) : ev.payload.step;
+        s = { id: ev.payload.step, label: id ? `${label} · ${id}` : label };
+        steps.push(s);
+      }
+      s.status = install && ev.payload.status === "skip" && ["download", "install"].includes(ev.payload.step) ? undefined : ev.payload.status;
+      s.detail = ev.payload.status === "ok" ? "" : ev.payload.detail;
+      render();
+    });
+    report = install ? await invoke<Report>("install_discord", { expectedVersion: latest, plan }) : await invoke<Report>("apply", { plan });
+    scan = await invoke<Scan>("scan");
+    view = "done";
   } catch (e) {
-    report = { freed: 0, warnings: [String(e)] };
+    operationError = String(e);
+    view = "error";
+  } finally {
+    un?.();
+    render();
   }
-  un();
-  scan = await invoke<Scan>("scan");
-  view = "done";
-  render();
 }
 
 const toggle = (list: string[], id: string, on: boolean) => (on ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id));
@@ -530,7 +604,10 @@ document.addEventListener("change", (ev) => {
       .map((m) => m.id);
     plan.modules = el.checked ? [...new Set([...plan.modules, ...ids])] : plan.modules.filter((id) => !ids.includes(id));
   } else if (d.extra) plan.extras = toggle(plan.extras, d.extra, el.checked);
-  else if (d.locale) plan.locales = toggle(plan.locales, d.locale, !el.checked);
+  else if (d.locale) {
+    plan.locales = toggle(plan.locales, d.locale, !el.checked);
+    if (plan.keep_locales) plan.keep_locales = toggle(plan.keep_locales, d.locale, el.checked);
+  }
   else return;
   if (d.opt === "updater" && el.checked) plan.shortcut = true;
   customize();
@@ -539,16 +616,18 @@ document.addEventListener("change", (ev) => {
 
 document.addEventListener("click", (ev) => {
   const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-action],[data-preset],[data-page],[data-lang],[data-default],[data-modules]");
-  if (!btn) return;
+  if (!btn || (btn instanceof HTMLButtonElement && btn.disabled) || view === "running") return;
   const d = btn.dataset;
   if (d.page) {
     page = d.page as Page;
+    if (scan && view === "done") { applyPreset(defaultPreset()); view = "options"; }
   } else if (d.lang) {
     setLang(d.lang as Lang);
   } else if (d.default) {
     store.set("profile", d.default);
   } else if (d.preset) {
     applyPreset(d.preset as Preset);
+    store.set("profile", preset);
   } else if (d.modules) {
     plan.modules = removable()
       .filter((m) => d.modules === "all" || (d.modules === "safe" && MODULES[m.id]?.risk === "safe"))
@@ -559,12 +638,22 @@ document.addEventListener("click", (ev) => {
       case "clean":
         renderReview();
         return;
+      case "dashboard":
+        page = "dashboard";
+        render();
+        return;
+      case "check-update":
+        void checkUpdate();
+        return;
+      case "install":
+        if (latest && !checking && !updateError) renderReview(true);
+        return;
       case "cancel":
         dialog.close();
         return;
       case "confirm":
         dialog.close();
-        void runPlan();
+        void runPlan(reviewInstall);
         return;
       case "rescan":
         void load();
@@ -582,4 +671,4 @@ document.addEventListener("click", (ev) => {
 
 setLang(getLang());
 void getVersion().then((v) => (version = v)).catch(() => {});
-void load();
+void load().then(checkUpdate);
