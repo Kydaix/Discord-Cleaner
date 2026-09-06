@@ -216,8 +216,8 @@ const opened = new Set<string>();
 const details = (key: string, cls = "") => `<details class="${cls}" data-key="${esc(key)}"${opened.has(key) ? " open" : ""}>`;
 
 function seg(items: [string, string][], attr: string, on: string, disabled: string[] = []): string {
-  return `<div class="seg" role="radiogroup">${items
-    .map(([v, label]) => `<button type="button" role="radio" aria-checked="${v === on}" class="${v === on ? "on" : ""}" ${attr}="${v}" ${disabled.includes(v) ? "disabled" : ""}>${esc(label)}</button>`)
+  return `<div class="seg">${items
+    .map(([v, label]) => `<button type="button" id="${attr}-${v}" aria-pressed="${v === on}" class="${v === on ? "on" : ""}" ${attr}="${v}" ${disabled.includes(v) ? "disabled" : ""}>${esc(label)}</button>`)
     .join("")}</div>`;
 }
 
@@ -238,18 +238,18 @@ function row(r: Row): string {
   return `
   <div class="row${r.disabled ? " disabled" : ""}">
     <label class="switch">
-      <input type="checkbox" ${r.attr} ${r.checked ? "checked" : ""} ${r.disabled ? "disabled" : ""}>
+      <input type="checkbox" id="${esc(`option-${r.attr}`)}" aria-label="${esc(r.title)}" ${r.attr} ${r.checked ? "checked" : ""} ${r.disabled ? "disabled" : ""}>
       <span></span>
     </label>
     ${details(r.attr)}
       <summary>
         <span class="row-title">${esc(r.title)}</span>
-        ${r.meta ? `<span class="meta">${esc(r.meta)}</span>` : ""}
         ${r.risk ? risk(r.risk) : ""}
         ${r.bytes !== undefined ? `<span class="size">${fmt(r.bytes)}</span>` : ""}
         <span class="caret" aria-hidden="true"></span>
       </summary>
       <div class="row-body">
+        ${r.meta ? `<p class="meta">${esc(r.meta)}</p>` : ""}
         <p><b>${t("details_what")}</b> ${esc(r.what)}</p>
         <p><b>${t("details_effect")}</b> ${esc(r.effect)}</p>
       </div>
@@ -276,7 +276,7 @@ function renderStatus(): string {
 
 function renderPresets(): string {
   const items = PRESET_IDS.map((p): [string, string] => [p, t(`preset_${p}` as Key)]);
-  return card("sliders", t("presets"), t("presets_hint"), seg(items, "data-preset", preset, store.get("custom") ? [] : ["custom"]) + `<p class="hint">${t(`preset_${preset}_hint` as Key)}</p>`);
+  return card("sliders", t("presets"), t("presets_hint"), seg(items, "data-preset", preset, store.get("custom") ? [] : ["custom"]) + `<p class="preset-description">${t(`preset_${preset}_hint` as Key)}</p>`);
 }
 
 function renderBackground(): string {
@@ -294,7 +294,7 @@ function renderUpdates(): string {
     row({ attr: 'data-opt="updater"', checked: plan.updater, title: t("updater_title"), what: t("updater_what"), effect: t("updater_effect"), risk: "moderate", bytes: scan.updater.bytes, disabled: scan.updater.paths.length === 0 }),
     row({ attr: 'data-opt="shortcut"', checked: plan.shortcut || plan.updater, title: t("shortcut_title"), what: t("shortcut_what"), effect: t("shortcut_effect"), disabled: plan.updater || !scan.latest_exe }),
   ].join("");
-  return card("refresh", t("sec_updates"), t("sec_updates_hint"), `<div class="rows">${rows}</div>`);
+  return card("refresh", t("sec_updates"), t("sec_updates_hint"), `<div class="rows">${rows}</div>` + (plan.updater ? note("note", t("updater_warning")) : ""));
 }
 
 function renderModules(): string {
@@ -307,7 +307,7 @@ function renderModules(): string {
     .map(({ g, items }) => {
       const on = items.filter((m) => plan.modules.includes(m.id)).length;
       const header = `<div class="group">
-        <label class="switch"><input type="checkbox" data-group="${g}" ${on === items.length ? "checked" : ""} ${on > 0 && on < items.length ? 'data-mixed="1"' : ""}><span></span></label>
+        <label class="switch"><input type="checkbox" id="group-${g}" aria-label="${esc(t(`group_${g}` as Key))}" data-group="${g}" ${on === items.length ? "checked" : ""} ${on > 0 && on < items.length ? 'data-mixed="1"' : ""}><span></span></label>
         <span>${t(`group_${g}` as Key)}</span><span class="size">${fmt(sum(items))}</span>
       </div>`;
       return header + items.map((m) => row({ attr: `data-module="${esc(m.id)}"`, checked: plan.modules.includes(m.id), title: info(moduleEntry(m.id)).title, what: info(moduleEntry(m.id)).what, effect: info(moduleEntry(m.id)).effect, risk: moduleEntry(m.id).risk, bytes: m.bytes, meta: m.id })).join("");
@@ -317,7 +317,7 @@ function renderModules(): string {
     <div class="btns">${(["none", "safe", "all"] as const).map((m) => `<button type="button" class="small" data-modules="${m}">${t(`modules_${m}`)}</button>`).join("")}</div></div>`;
   const kept = scan.modules.filter((m) => PROTECTED.includes(m.id)).map((m) => m.id);
   const notes = (plan.updater || plan.modules.length === 0 ? "" : note("note", t("modules_comeback"))) + (kept.length ? note("info", t("modules_protected", { list: kept.join(", ") })) : "");
-  return card("puzzle", t("sec_modules"), t("sec_modules_hint"), toolbar + `<div class="rows">${rows}</div>` + notes);
+  return card("puzzle", t("sec_modules"), t("sec_modules_hint"), `${details("modules", "module-options")}<summary><span>${t("modules_selected", { n: selected.length, total: items.length, size: fmt(sum(selected)) })}</span><span class="caret" aria-hidden="true"></span></summary>${toolbar}<div class="rows">${rows}</div>${notes}</details>`);
 }
 
 function renderLocales(): string {
@@ -327,7 +327,7 @@ function renderLocales(): string {
   const removed = locs.length - kept.length;
   const chip = (l: Item) => {
     const req = l.id === "en-US";
-    return `<label class="loc${isKept(l) ? " on" : ""}"><input type="checkbox" data-locale="${esc(l.id)}" ${isKept(l) ? "checked" : ""} ${req ? "disabled" : ""}><span>${esc(l.id)}</span><small>${req ? t("locales_required") : fmt(l.bytes)}</small></label>`;
+    return `<label class="loc${isKept(l) ? " on" : ""}"><input type="checkbox" id="locale-${esc(l.id)}" data-locale="${esc(l.id)}" ${isKept(l) ? "checked" : ""} ${req ? "disabled" : ""}><span>${esc(l.id)}</span><small>${req ? t("locales_required") : fmt(l.bytes)}</small></label>`;
   };
   const body = `${details("locales", "locales-wrap")}
     <summary>
@@ -346,11 +346,11 @@ function renderExtras(): string {
 }
 
 function renderOptions() {
-  app.innerHTML = renderStatus() + renderPresets() + renderBackground() + renderUpdates() + (scan.modules.length ? renderModules() : "") + (scan.locales.length ? renderLocales() : "") + (scan.extras.length ? renderExtras() : "");
+  app.innerHTML = renderStatus() + renderPresets() + `<div class="options-grid">${renderBackground()}${renderUpdates()}</div>` + (scan.modules.length ? renderModules() : "") + (scan.locales.length ? renderLocales() : "") + (scan.extras.length ? renderExtras() : "");
   app.querySelectorAll<HTMLInputElement>("[data-mixed]").forEach((el) => (el.indeterminate = true));
   bar.hidden = false;
-  bar.innerHTML = `<div class="bar-left">${icon("db", 18)}<strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong><span>•</span><span>${t("bar_actions", { n: actionCount() })}</span></div>
-    <button type="button" class="primary" data-action="clean" ${actionCount() === 0 ? "disabled" : ""}>${icon("sparkle", 16)}${t("clean")}</button>`;
+  bar.innerHTML = `<div><div class="bar-left" role="status">${icon("db", 18)}<strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong><span>·</span><span>${t("bar_actions", { n: actionCount() })}</span></div><p class="hint">${t("bar_hint")}</p></div>
+    <button type="button" id="review-button" class="primary" data-action="clean" ${actionCount() === 0 ? "disabled" : ""}>${icon("sparkle", 16)}${t("clean")}</button>`;
 }
 
 function renderReview() {
@@ -363,8 +363,10 @@ function renderReview() {
   if (plan.extras.length) lines.push(t("review_extras", { n: plan.extras.length }));
   if (plan.shortcut) lines.push(t("review_shortcut"));
   if (plan.autostart) lines.push(t("review_autostart"));
-  dialog.innerHTML = `<h2>${t("review_title")}</h2>
+  dialog.setAttribute("aria-labelledby", "review-title");
+  dialog.innerHTML = `<h2 id="review-title">${t("review_title")}</h2>
     <p class="hint">${t("review_body")}</p>
+    ${plan.updater ? note("note", t("updater_warning")) : ""}
     <ul>${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
     <p><strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong></p>
     <div class="actions"><button type="button" data-action="cancel">${t("cancel")}</button><button type="button" class="primary" data-action="confirm">${icon("sparkle", 16)}${t("confirm")}</button></div>`;
@@ -425,8 +427,18 @@ function defaultPreset(): Preset {
 }
 
 function render() {
+  const focused = document.activeElement?.id;
+  renderPage();
+  if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
+}
+
+function renderPage() {
   document.querySelectorAll<HTMLElement>("[data-t]").forEach((el) => (el.textContent = t(el.dataset.t as Key)));
-  document.querySelectorAll<HTMLElement>("[data-page]").forEach((el) => el.classList.toggle("on", el.dataset.page === page));
+  document.querySelectorAll<HTMLElement>("[data-page]").forEach((el) => {
+    el.classList.toggle("on", el.dataset.page === page);
+    if (el.dataset.page === page) el.setAttribute("aria-current", "page");
+    else el.removeAttribute("aria-current");
+  });
   const head: Record<Page, [string, string]> = {
     cleaner: ["Discord Cleaner", t("subtitle")],
     settings: [t("nav_settings"), t("nav_settings_sub")],

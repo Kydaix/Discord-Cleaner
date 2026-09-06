@@ -31,19 +31,30 @@ Nothing is backed up: reinstalling Discord from [discord.com](https://discord.co
 
 ## Build from source
 
-Prerequisites: [Rust](https://rustup.rs), Node 20+, and the Visual Studio C++ Build Tools (Tauri's [Windows prerequisites](https://tauri.app/start/prerequisites/)).
+Prerequisites: [rustup](https://rustup.rs), Node 22.23.2 (the CI version) or a compatible newer version, and the Visual Studio C++ Build Tools (Tauri's [Windows prerequisites](https://tauri.app/start/prerequisites/)). Rust is pinned in `rust-toolchain.toml`.
 
 ```
-npm install
+rustup toolchain install --no-self-update
+npm ci
 npm run tauri dev      # run from an elevated terminal: the app requires admin
-npm run tauri build    # -> src-tauri/target/release/discord-cleaner.exe (portable, single file)
+npm run tauri build -- --no-bundle -- --locked
+# -> src-tauri/target/release/discord-cleaner.exe (portable, single file)
 ```
 
-Rust unit tests: `cd src-tauri && cargo test --lib` (`--lib` because the main binary's manifest requires elevation).
+Checks:
+
+```
+npm run test:release
+npm run build
+npm run test:ux
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+```
+
+The UI check uses installed Microsoft Edge and simulated IPC, so it never cleans the real Discord installation. `--lib` keeps Rust tests separate from the main binary's administrator manifest.
 
 ## Releases
 
-Every push to `main` builds the exe and publishes a GitHub Release. The version comes from the commit messages since the last tag ([Conventional Commits](https://www.conventionalcommits.org)):
+Pull requests to `main` run the checks and build a Windows executable without publishing. Pushes to `main` and manual runs on `main` publish only after all checks pass. The version comes from the commit messages since the highest reachable stable version tag ([Conventional Commits](https://www.conventionalcommits.org)):
 
 | Commit message | Bump |
 | --- | --- |
@@ -52,6 +63,10 @@ Every push to `main` builds the exe and publishes a GitHub Release. The version 
 | anything else (`fix:`, `docs:`, `chore:`...) | patch |
 
 Add `[skip ci]` to a commit message to push without releasing. The version is injected at build time, `tauri.conf.json` stays at `0.0.0` in the repo.
+
+The build job has read-only repository access; only the separate publishing job can write releases. Publication uploads the executable and its SHA-256 file to a draft before publishing it. A rerun resumes an incomplete release, and skips rebuilding when the commit already has a published release with its executable.
+
+Rust dependencies are cached between builds; only `main` saves the cache. The pinned toolchain is installed in an isolated Rust home so the runner's other toolchains do not invalidate the cache. CI omits test debug symbols while keeping assertions, and keeps release LTO off. Changing Rust or build settings can require rebuilding the cache once. Each build stores the verified executable, compiler timing report and UI screenshots as workflow artifacts for seven days. Use the timing report and separate cache-hit/cache-miss runs when comparing build speed.
 
 ## How it works
 
