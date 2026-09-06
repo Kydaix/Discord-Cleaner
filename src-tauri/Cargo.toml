@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Clean up Discord on Windows: background helper, autostart, updater, unused modules and locales."
 authors = ["Kydaix"]
 license = "MIT"
-repository = "https://github.com/Kydaix/discord-cleaner"
+repository = "https://github.com/Kydaix/Discord-Cleaner"
 edition = "2021"
 
 [lib]

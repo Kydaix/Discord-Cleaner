@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { EXTRAS, MODULES, PRESETS, PROTECTED, UNKNOWN, type Entry, type PresetId } from "./catalog";
 import { getLang, setLang, t, type Key } from "./i18n";
 
-export const REPO = "https://github.com/Kydaix/discord-cleaner";
+export const REPO = "https://github.com/Kydaix/Discord-Cleaner";
 
 interface Item {
   id: string;
