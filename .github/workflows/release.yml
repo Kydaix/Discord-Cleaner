@@ -1,4 +1,4 @@
-# Builds the Windows installer + portable exe and attaches them to a GitHub Release on every v* tag.
+# Builds the portable exe and attaches it to a GitHub Release on every v* tag.
 name: Release
 
 on:
@@ -23,15 +23,13 @@ jobs:
           workspaces: src-tauri
       - run: npm install
       - run: cd src-tauri && cargo test --lib
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Discord Cleaner ${{ github.ref_name }}
-          releaseDraft: true
-      - name: Attach portable exe
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: gh release upload ${{ github.ref_name }} src-tauri/target/release/discord-cleaner.exe --clobber
+      - run: npm run tauri build -- --no-bundle
+      - run: Copy-Item src-tauri/target/release/discord-cleaner.exe DiscordCleaner.exe
+      - if: startsWith(github.ref, 'refs/tags/v')
+        run: gh release create ${{ github.ref_name }} DiscordCleaner.exe --title "Discord Cleaner ${{ github.ref_name }}" --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiscordCleaner
+          path: DiscordCleaner.exe

@@ -21,7 +21,7 @@ Core modules (`discord_desktop_core`, `discord_voice`, `discord_utils`) and the 
 
 ## Install
 
-Download `Discord Cleaner_x.y.z_x64-setup.exe` or the portable `discord-cleaner.exe` from the [Releases](../../releases) page. Windows 10/11, 64-bit. The app asks for administrator rights at launch (needed for the service and `HKLM`).
+No installer. Download `DiscordCleaner.exe` from the [Releases](../../releases) page and run it. Windows 10/11, 64-bit, ~4 MB, nothing is written outside Discord's own folders. The app asks for administrator rights at launch (needed for the service and `HKLM`).
 
 ## Undo
 
@@ -34,7 +34,7 @@ Prerequisites: [Rust](https://rustup.rs), Node 20+, and the Visual Studio C++ Bu
 ```
 npm install
 npm run tauri dev      # run from an elevated terminal: the app requires admin
-npm run tauri build    # -> src-tauri/target/release/discord-cleaner.exe + bundle/nsis/*-setup.exe
+npm run tauri build    # -> src-tauri/target/release/discord-cleaner.exe (portable, single file)
 ```
 
 Rust unit tests: `cd src-tauri && cargo test --lib` (`--lib` because the main binary's manifest requires elevation).
