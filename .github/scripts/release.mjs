@@ -73,6 +73,40 @@ export function publish(env, run = command) {
   run('gh', ['release', 'edit', tag, '--repo', repo, '--draft=false']);
 }
 
+export function cleanup(env, run = command) {
+  const repo = env.GITHUB_REPOSITORY;
+  const tag = `v${env.RELEASE_VERSION}`;
+  const current = release(repo, tag, run);
+  checkTarget(env, tag, current, run);
+  if (!complete(current)) throw new Error('Cleanup requires a published release with its executable.');
+  const api = path => JSON.parse(run('gh', ['api', `repos/${repo}/${path}`]));
+  if (api('releases/latest').id !== current.id) {
+    console.log('A newer release exists; skipping cleanup.');
+    return;
+  }
+  const currentRun = api(`actions/runs/${env.GITHUB_RUN_ID}`);
+  if (String(currentRun.id) !== env.GITHUB_RUN_ID || currentRun.head_sha !== env.GITHUB_SHA) {
+    throw new Error('Cleanup run does not match this commit.');
+  }
+  // Collect every page before deleting, otherwise pagination can skip entries.
+  const releases = lines(run('gh', ['api', `repos/${repo}/releases?per_page=100`,
+    '--paginate', '--jq', '.[] | {id, draft, published_at} | @json'])).map(JSON.parse);
+  const runs = lines(run('gh', ['api', `repos/${repo}/actions/runs?per_page=100`,
+    '--paginate', '--jq', '.workflow_runs[] | {id, status, created_at} | @json'])).map(JSON.parse);
+  for (const old of releases) {
+    if (old.id !== current.id && !old.draft && old.published_at <= current.published_at) {
+      run('gh', ['api', '--method', 'DELETE', `repos/${repo}/releases/${old.id}`]);
+      console.log(`Deleted release ${old.id}`);
+    }
+  }
+  for (const old of runs) {
+    if (old.id < currentRun.id && old.status === 'completed' && old.created_at <= currentRun.created_at) {
+      run('gh', ['api', '--method', 'DELETE', `repos/${repo}/actions/runs/${old.id}`]);
+      console.log(`Deleted run ${old.id}`);
+    }
+  }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     if (process.argv[2] === 'prepare') {
@@ -81,8 +115,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.log(result.build ? `Build v${result.version}` : `v${result.version} is already published with its executable.`);
     } else if (process.argv[2] === 'publish') {
       publish(process.env);
+    } else if (process.argv[2] === 'cleanup') {
+      cleanup(process.env);
     } else {
-      throw new Error('Expected prepare or publish.');
+      throw new Error('Expected prepare, publish or cleanup.');
     }
   } catch (error) {
     console.error(error.stderr?.toString() || error.message);

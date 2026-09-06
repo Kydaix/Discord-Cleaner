@@ -64,9 +64,11 @@ Pull requests to `main` run the checks and build a Windows executable without pu
 
 Add `[skip ci]` to a commit message to push without releasing. The version is injected at build time, `tauri.conf.json` stays at `0.0.0` in the repo.
 
-The build job has read-only repository access; only the separate publishing job can write releases. Publication uploads the executable and its SHA-256 file to a draft before publishing it. A rerun resumes an incomplete release, and skips rebuilding when the commit already has a published release with its executable.
+The build job has read-only repository access. Publication uploads the executable and its SHA-256 file to a draft before publishing it. A rerun resumes an incomplete release, and skips rebuilding when the commit already has a published release with its executable.
 
-Rust dependencies are cached between builds; only `main` saves the cache. The pinned toolchain is installed in an isolated Rust home so the runner's other toolchains do not invalidate the cache. CI omits test debug symbols while keeping assertions, and keeps release LTO off. Changing Rust or build settings can require rebuilding the cache once. Each build stores the verified executable, compiler timing report and UI screenshots as workflow artifacts for seven days. Use the timing report and separate cache-hit/cache-miss runs when comparing build speed.
+After successful publication, a separate cleanup job deletes older published releases and older completed workflow runs across the repository, including their logs and artifacts. It keeps the latest release, the current run, active or newer runs, draft releases, and all Git tags (needed for versioning). Only publishing and cleanup can write releases; only cleanup can delete runs. Rerunning the workflow retries cleanup without rebuilding an already published version; rerunning an older version skips cleanup if a newer release exists.
+
+Rust dependencies are cached between builds; only `main` saves the cache. The pinned toolchain is installed in an isolated Rust home so the runner's other toolchains do not invalidate the cache. CI omits test debug symbols while keeping assertions, and keeps release LTO off. Changing Rust or build settings can require rebuilding the cache once. Each build stores the verified executable, compiler timing report and UI screenshots as workflow artifacts for up to seven days, or until its run is deleted by the next release. Use the timing report and separate cache-hit/cache-miss runs when comparing build speed.
 
 ## How it works
 

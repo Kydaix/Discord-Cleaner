@@ -145,3 +145,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+
+  cleanup:
+    name: Remove old releases and completed runs
+    needs: [prepare, publish]
+    if: >-
+      always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.prepare.result == 'success' &&
+      (needs.publish.result == 'success' || needs.prepare.outputs.build == 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - name: Checkout release script and tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Keep the latest release and this run
+        run: node .github/scripts/release.mjs cleanup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
