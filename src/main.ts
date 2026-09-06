@@ -428,6 +428,10 @@ function defaultPreset(): Preset {
 
 function render() {
   const focused = document.activeElement?.id;
+  // Read the DOM synchronously: native toggle events can arrive after an option changes.
+  app.querySelectorAll<HTMLDetailsElement>("details[data-key]").forEach((d) => {
+    d.open ? opened.add(d.dataset.key!) : opened.delete(d.dataset.key!);
+  });
   renderPage();
   if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
 }
@@ -513,15 +517,6 @@ async function runPlan() {
 }
 
 const toggle = (list: string[], id: string, on: boolean) => (on ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id));
-
-document.addEventListener(
-  "toggle",
-  (ev) => {
-    const d = ev.target;
-    if (d instanceof HTMLDetailsElement && d.dataset.key) d.open ? opened.add(d.dataset.key) : opened.delete(d.dataset.key);
-  },
-  true,
-);
 
 document.addEventListener("change", (ev) => {
   const el = ev.target as HTMLInputElement;

@@ -37,7 +37,13 @@ const { chromium } = require('playwright');
     await page.goto('http://127.0.0.1:1421');
     await page.locator('#review-button').waitFor();
     assert.equal(await page.locator('[data-key="modules"]').getAttribute('open'), null);
-    await page.locator('[data-key="modules"] > summary').click();
+    // Opening and changing an option in one event loop turn must not lose the open state.
+    assert.equal(await page.evaluate(() => {
+      document.querySelector('[data-key="modules"]').open = true;
+      document.querySelector('[data-module="discord_overlay2"]').click();
+      return document.querySelector('[data-key="modules"]').open;
+    }), true);
+    await page.locator('[data-preset="balanced"]').click();
     const krisp = page.getByRole('checkbox', { name: 'Suppression de bruit Krisp', exact: true });
     await krisp.focus();
     await page.keyboard.press('Space');
