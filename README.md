@@ -39,6 +39,18 @@ npm run tauri build    # -> src-tauri/target/release/discord-cleaner.exe (portab
 
 Rust unit tests: `cd src-tauri && cargo test --lib` (`--lib` because the main binary's manifest requires elevation).
 
+## Releases
+
+Every push to `main` builds the exe and publishes a GitHub Release. The version comes from the commit messages since the last tag ([Conventional Commits](https://www.conventionalcommits.org)):
+
+| Commit message | Bump |
+| --- | --- |
+| `feat!: ...` or a `BREAKING CHANGE` footer | major |
+| `feat: ...` | minor |
+| anything else (`fix:`, `docs:`, `chore:`...) | patch |
+
+Add `[skip ci]` to a commit message to push without releasing. The version is injected at build time, `tauri.conf.json` stays at `0.0.0` in the repo.
+
 ## How it works
 
 - `src-tauri/src/cleaner.rs`: scans `%LOCALAPPDATA%\Discord`, the service (`sc.exe`), the `Run` keys (`winreg`) and applies the plan. Deletions are resolved from a fresh scan at apply time, never from stale paths.
