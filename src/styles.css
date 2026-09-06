@@ -161,11 +161,15 @@ button.small {
   height: 44px;
   flex: none;
   border-radius: 12px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  background: linear-gradient(135deg, #5865f2, #7c88ff);
+  overflow: hidden;
   box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+}
+.logo img, .promo img {
+  display: block;
+  border-radius: inherit;
+}
+.promo img {
+  border-radius: 10px;
 }
 nav {
   display: flex;

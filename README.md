@@ -1,5 +1,7 @@
 # Discord Cleaner
 
+<img src="public/logo.png" width="96" align="right" alt="" />
+
 Remove what Discord installs behind your back on Windows, keep what you use. A small GUI (Tauri, ~8 MB) that explains every option before touching anything.
 
 *Français : l'application est bilingue (EN/FR), la langue suit celle de Windows et se change d'un clic dans l'en-tête.*
