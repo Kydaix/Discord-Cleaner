@@ -42,8 +42,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - if: steps.version.outputs.version
-        uses: dtolnay/rust-toolchain@stable
+      # Rust ships preinstalled on windows-latest; installing a toolchain costs ~20 s per run.
       - if: steps.version.outputs.version
         uses: swatinem/rust-cache@v2
         with:

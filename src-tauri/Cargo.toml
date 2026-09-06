@@ -22,8 +22,8 @@ serde_json = "1"
 winreg = "0.55"
 
 [profile.release]
-codegen-units = 1
-lto = true
+# LTO disabled on purpose: fat LTO cost ~2 min per CI release for ~100 KB.
+lto = "off"
 opt-level = 3
 panic = "abort"
 strip = true
