@@ -131,6 +131,19 @@ export const UNKNOWN: Entry = e(
   ["Module inconnu", "Pas encore dans notre catalogue : Discord l'a ajouté après la sortie de cette version de l'application.", "Inconnu. Laissé en place sauf si vous le cochez."],
 );
 
+export type GroupId = "overlay" | "games" | "voice" | "network" | "other";
+
+/** Modules grouped by purpose, in display order. Anything not listed (incl. unknown modules) lands in "other". */
+export const GROUPS: Record<GroupId, string[]> = {
+  overlay: ["discord_overlay2", "discord_overlay", "discord_desktop_overlay", "discord_hook"],
+  games: ["discord_game_utils", "discord_rpc", "discord_dispatch"],
+  voice: ["discord_krisp", "discord_media"],
+  network: ["discord_erlpack", "discord_zstd", "discord_cloudsync", "discord_modules"],
+  other: [],
+};
+
+export const groupOf = (id: string): GroupId => (Object.keys(GROUPS) as GroupId[]).find((g) => GROUPS[g].includes(id)) ?? "other";
+
 export type PresetId = "minimal" | "balanced" | "aggressive";
 
 /** Which risk levels each preset removes. Minimal touches no file inside app-*. */

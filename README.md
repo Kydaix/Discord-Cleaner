@@ -15,7 +15,7 @@ Remove what Discord installs behind your back on Windows, keep what you use. A s
 | **Languages** | Translation packs other than the ones you keep | Discord ships every language |
 | **Loose files** | `swiftshader/`, `chrome_*.pak`, `app.ico`, `debug.log` | Nothing depends on them |
 
-Three profiles (Minimal, Balanced, Aggressive) give sane defaults; every switch has an expandable explanation of what the thing is, what happens without it, and a risk chip (safe / moderate / risky). A review screen lists the exact actions before anything runs, then a live progress log shows what happened.
+Three profiles (Minimal, Balanced, Aggressive) give sane defaults; every switch has an expandable explanation of what the thing is, what happens without it, and a risk chip (safe / moderate / risky). Modules are grouped by purpose (overlay, games, voice, connection, other) with a switch per group and quick actions (none / safe only / everything). Any manual change becomes the **Custom** profile, remembered for the next launch; the Settings page picks which profile is applied after each scan. A review screen lists the exact actions before anything runs, then a live progress log shows what happened.
 
 Core modules (`discord_desktop_core`, `discord_voice`, `discord_utils`) and the `en-US` locale are never offered for removal.
 

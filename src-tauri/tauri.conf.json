@@ -14,10 +14,10 @@
     "windows": [
       {
         "title": "Discord Cleaner",
-        "width": 980,
-        "height": 720,
-        "minWidth": 760,
-        "minHeight": 560,
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
         "center": true
       }
     ],

@@ -1,8 +1,9 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { EXTRAS, MODULES, PRESETS, PROTECTED, UNKNOWN, type Entry, type PresetId } from "./catalog";
-import { getLang, setLang, t, type Key } from "./i18n";
+import { EXTRAS, GROUPS, groupOf, MODULES, PRESETS, PROTECTED, UNKNOWN, type Entry, type GroupId, type PresetId } from "./catalog";
+import { getLang, setLang, t, type Key, type Lang } from "./i18n";
 
 export const REPO = "https://github.com/Kydaix/Discord-Cleaner";
 
@@ -44,18 +45,24 @@ interface Report {
   warnings: string[];
 }
 
+type Page = "cleaner" | "settings" | "about";
 type View = "loading" | "notfound" | "options" | "running" | "done";
 type Preset = PresetId | "custom";
+const PRESET_IDS: Preset[] = ["minimal", "balanced", "aggressive", "custom"];
 
+let page: Page = "cleaner";
 let view: View = "loading";
 let scan: Scan;
 let plan: Plan;
 let preset: Preset = "balanced";
 let steps: { id: string; label: string; status?: Progress["status"]; detail?: string }[] = [];
 let report: Report | null = null;
+let version = "";
 
 const app = document.getElementById("app")!;
 const bar = document.getElementById("bar")!;
+const title = document.getElementById("title")!;
+const subtitle = document.getElementById("subtitle")!;
 const dialog = document.getElementById("review") as HTMLDialogElement;
 
 // ---------------------------------------------------------------- helpers
@@ -76,6 +83,28 @@ function fmt(bytes: number): string {
 
 const info = (entry: Entry) => entry[getLang()];
 const moduleEntry = (id: string) => MODULES[id] ?? UNKNOWN;
+const sum = (items: Item[]) => items.reduce((s, i) => s + i.bytes, 0);
+/** Modules the user may remove: everything the scan found minus the protected core. */
+const removable = () => scan.modules.filter((m) => !PROTECTED.includes(m.id));
+
+/** Everything the app remembers between launches goes through here. */
+const store = {
+  get<T>(key: string): T | null {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? null : (JSON.parse(v) as T);
+    } catch {
+      return null;
+    }
+  },
+  set(key: string, value: unknown) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* storage unavailable */
+    }
+  },
+};
 
 /** Locales worth keeping by default: Electron's fallback plus the system language. */
 function defaultKeep(): Set<string> {
@@ -84,7 +113,11 @@ function defaultKeep(): Set<string> {
   return new Set(scan.locales.map((l) => l.id).filter((id) => id === "en-US" || id.toLowerCase() === nav || id.toLowerCase().split("-")[0] === primary));
 }
 
-function applyPreset(p: PresetId) {
+function applyPreset(p: Preset) {
+  if (p === "custom") {
+    if (applySaved()) return;
+    p = "balanced";
+  }
   const def = PRESETS[p];
   const keep = defaultKeep();
   preset = p;
@@ -92,7 +125,9 @@ function applyPreset(p: PresetId) {
     helper: true,
     run_entries: true,
     updater: def.updater && scan.updater.paths.length > 0,
-    modules: scan.modules.filter((m) => MODULES[m.id] && def.risks.includes(MODULES[m.id].risk)).map((m) => m.id),
+    modules: removable()
+      .filter((m) => MODULES[m.id] && def.risks.includes(MODULES[m.id].risk))
+      .map((m) => m.id),
     locales: def.trimLocales ? scan.locales.filter((l) => !keep.has(l.id)).map((l) => l.id) : [],
     extras: scan.extras.filter((x) => def.risks.includes(EXTRAS[x.id].risk)).map((x) => x.id),
     autostart: scan.run_entries.length > 0,
@@ -100,8 +135,36 @@ function applyPreset(p: PresetId) {
   };
 }
 
+/** Restores the last hand-made selection, dropping whatever the current scan no longer has. */
+function applySaved(): boolean {
+  const s = store.get<Partial<Plan>>("custom");
+  if (!s) return false;
+  const ids = (items: Item[]) => new Set(items.map((i) => i.id));
+  const mods = ids(removable());
+  const locs = ids(scan.locales);
+  const exts = ids(scan.extras);
+  plan = {
+    helper: !!s.helper,
+    run_entries: !!s.run_entries,
+    updater: !!s.updater && scan.updater.paths.length > 0,
+    modules: (s.modules ?? []).filter((id) => mods.has(id)),
+    locales: (s.locales ?? []).filter((id) => locs.has(id) && id !== "en-US"),
+    extras: (s.extras ?? []).filter((id) => exts.has(id)),
+    autostart: !!s.autostart && !!scan.latest_exe,
+    shortcut: !!s.shortcut || !!s.updater,
+  };
+  preset = "custom";
+  return true;
+}
+
+/** Any manual change turns the profile into "custom" and remembers it for next time. */
+function customize() {
+  preset = "custom";
+  store.set("custom", plan);
+}
+
 function reclaimable(): number {
-  const pick = (items: Item[], ids: string[]) => items.filter((i) => ids.includes(i.id)).reduce((s, i) => s + i.bytes, 0);
+  const pick = (items: Item[], ids: string[]) => sum(items.filter((i) => ids.includes(i.id)));
   return (plan.updater ? scan.updater.bytes : 0) + pick(scan.modules, plan.modules) + pick(scan.locales, plan.locales) + pick(scan.extras, plan.extras);
 }
 
@@ -124,8 +187,38 @@ function buildSteps() {
 
 // ---------------------------------------------------------------- rendering
 
-function risk(r: Entry["risk"]) {
-  return `<span class="chip risk-${r}">${t(`risk_${r}` as Key)}</span>`;
+const ICONS = {
+  monitor: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  sliders: '<path d="M4 6h16M4 12h16M4 18h16"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="14" cy="18" r="2"/>',
+  rocket: '<path d="M5 15c-1.5 1.5-2 5-2 5s3.5-.5 5-2M14 4c2.5-1.5 6-1 6-1s.5 3.5-1 6c-1.5 3-5 6.5-8 8.5L8 14.5c2-3 3.5-7 6-10.5z"/><circle cx="15" cy="9" r="1.5"/>',
+  refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/>',
+  puzzle: '<path d="M9 4a2 2 0 1 1 4 0h5v5a2 2 0 1 1 0 4v5h-5a2 2 0 1 1-4 0H4v-5a2 2 0 1 1 0-4V4z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 0 1 0 18M12 3a13 13 0 0 0 0 18"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/>',
+  alert: '<path d="M12 3 2 20h20zM12 10v4M12 17h.01"/>',
+  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM19 16l.7 1.8 1.8.7-1.8.7L19 21l-.7-1.8-1.8-.7 1.8-.7z"/>',
+  db: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+};
+type Icon = keyof typeof ICONS;
+const icon = (name: Icon, size = 22) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+
+function card(ico: Icon, heading: string, hint: string, body: string): string {
+  return `<section class="card"><div class="card-head"><span class="tile">${icon(ico)}</span><div><h2>${esc(heading)}</h2><p class="hint">${esc(hint)}</p></div></div><div class="card-body">${body}</div></section>`;
+}
+
+const risk = (r: Entry["risk"]) => `<span class="chip risk-${r}">${t(`risk_${r}` as Key)}</span>`;
+const note = (kind: "note" | "info", text: string) => `<p class="${kind}">${icon(kind === "note" ? "alert" : "info", 18)}<span>${esc(text)}</span></p>`;
+
+/** Which <details> are open survives re-renders (every switch change rebuilds the DOM). */
+const opened = new Set<string>();
+const details = (key: string, cls = "") => `<details class="${cls}" data-key="${esc(key)}"${opened.has(key) ? " open" : ""}>`;
+
+function seg(items: [string, string][], attr: string, on: string, disabled: string[] = []): string {
+  return `<div class="seg" role="radiogroup">${items
+    .map(([v, label]) => `<button type="button" role="radio" aria-checked="${v === on}" class="${v === on ? "on" : ""}" ${attr}="${v}" ${disabled.includes(v) ? "disabled" : ""}>${esc(label)}</button>`)
+    .join("")}</div>`;
 }
 
 interface Row {
@@ -148,7 +241,7 @@ function row(r: Row): string {
       <input type="checkbox" ${r.attr} ${r.checked ? "checked" : ""} ${r.disabled ? "disabled" : ""}>
       <span></span>
     </label>
-    <details>
+    ${details(r.attr)}
       <summary>
         <span class="row-title">${esc(r.title)}</span>
         ${r.meta ? `<span class="meta">${esc(r.meta)}</span>` : ""}
@@ -164,87 +257,100 @@ function row(r: Row): string {
   </div>`;
 }
 
-function section(title: Key, hint: Key, body: string, note = ""): string {
-  return `<section class="card">
-    <header><h2>${t(title)}</h2><p class="hint">${t(hint)}</p></header>
-    ${note}
-    <div class="rows">${body}</div>
-  </section>`;
-}
-
 function renderStatus(): string {
-  const running = scan.running;
+  const dot = (ok: boolean) => `<span class="dot ${ok ? "dot-ok" : "dot-warn"}"></span>`;
   const autostart = scan.run_entries.length > 0;
-  const svc = t(`service_${scan.service}` as Key);
-  return `<section class="card status">
-    <header><h2>${t("status_title")}</h2></header>
-    <dl>
-      <dt>${t("status_path")}</dt><dd class="mono">${esc(scan.root ?? "")}</dd>
-      <dt>${t("status_versions")}</dt><dd>${scan.versions.map((v, i) => `<span class="chip${i === 0 ? " chip-accent" : ""}">${esc(v)}${i === 0 ? ` · ${t("status_latest")}` : ""}</span>`).join(" ") || "—"}</dd>
-      <dt>Discord</dt><dd><span class="dot ${running ? "dot-warn" : "dot-ok"}"></span>${running ? `${t("status_running")} <span class="hint">(${t("status_running_hint")})</span>` : t("status_closed")}</dd>
-      <dt>${t("status_service")}</dt><dd><span class="dot ${scan.service === "running" ? "dot-warn" : "dot-ok"}"></span>${svc}</dd>
-      <dt>${t("status_autostart")}</dt><dd>${autostart ? t("yes") : t("no")}</dd>
-    </dl>
-  </section>`;
+  return card(
+    "monitor",
+    t("status_title"),
+    t("status_hint"),
+    `<dl class="kv">
+      <dt>${t("status_path")}</dt><dd><span class="path">${esc(scan.root ?? "")}</span></dd>
+      <dt>${t("status_versions")}</dt><dd>${scan.versions.map((v, i) => `<span class="chip${i === 0 ? " chip-accent" : ""}">${esc(v)}${i === 0 ? ` · ${t("status_latest")}` : ""}</span>`).join("") || "—"}</dd>
+      <dt>Discord</dt><dd>${dot(!scan.running)}${scan.running ? `${t("status_running")} <span class="hint">(${t("status_running_hint")})</span>` : t("status_closed")}</dd>
+      <dt>${t("status_service")}</dt><dd>${dot(scan.service !== "running")}${t(`service_${scan.service}` as Key)}</dd>
+      <dt>${t("status_autostart")}</dt><dd>${dot(!autostart)}${autostart ? t("yes") : t("no")}</dd>
+    </dl>`,
+  );
 }
 
 function renderPresets(): string {
-  const ids: Preset[] = ["minimal", "balanced", "aggressive", "custom"];
-  return `<section class="card presets">
-    <header><h2>${t("presets")}</h2></header>
-    <div class="seg" role="radiogroup">
-      ${ids.map((p) => `<button type="button" role="radio" aria-checked="${p === preset}" class="${p === preset ? "on" : ""}" ${p === "custom" ? "disabled" : `data-preset="${p}"`}>${t(`preset_${p}` as Key)}</button>`).join("")}
-    </div>
-    <p class="hint">${t(`preset_${preset}_hint` as Key)}</p>
-  </section>`;
+  const items = PRESET_IDS.map((p): [string, string] => [p, t(`preset_${p}` as Key)]);
+  return card("sliders", t("presets"), t("presets_hint"), seg(items, "data-preset", preset, store.get("custom") ? [] : ["custom"]) + `<p class="hint">${t(`preset_${preset}_hint` as Key)}</p>`);
 }
 
-function renderOptions() {
-  const has = (items: Item[]) => items.length > 0;
-  const background = [
-    row({ attr: 'data-opt="helper"', checked: plan.helper, title: t("helper_title"), what: t("helper_what"), effect: t("helper_effect"), risk: "safe", meta: scan.service === "absent" && scan.helper_exes.length === 0 ? t("service_absent") : t("helper_found", { n: scan.helper_exes.length }) }),
+function renderBackground(): string {
+  const helperMeta = scan.service === "absent" && scan.helper_exes.length === 0 ? t("service_absent") : t("helper_found", { n: scan.helper_exes.length });
+  const rows = [
+    row({ attr: 'data-opt="helper"', checked: plan.helper, title: t("helper_title"), what: t("helper_what"), effect: t("helper_effect"), risk: "safe", meta: helperMeta }),
     row({ attr: 'data-opt="run_entries"', checked: plan.run_entries, title: t("run_title"), what: t("run_what"), effect: t("run_effect"), risk: "safe", meta: t("run_found", { n: scan.run_entries.length }) }),
     row({ attr: 'data-opt="autostart"', checked: plan.autostart, title: t("autostart_title"), what: t("autostart_what"), effect: t("autostart_effect"), disabled: !scan.latest_exe }),
   ].join("");
+  return card("rocket", t("sec_background"), t("sec_background_hint"), `<div class="rows">${rows}</div>`);
+}
 
-  const updates = [
+function renderUpdates(): string {
+  const rows = [
     row({ attr: 'data-opt="updater"', checked: plan.updater, title: t("updater_title"), what: t("updater_what"), effect: t("updater_effect"), risk: "moderate", bytes: scan.updater.bytes, disabled: scan.updater.paths.length === 0 }),
     row({ attr: 'data-opt="shortcut"', checked: plan.shortcut || plan.updater, title: t("shortcut_title"), what: t("shortcut_what"), effect: t("shortcut_effect"), disabled: plan.updater || !scan.latest_exe }),
   ].join("");
+  return card("refresh", t("sec_updates"), t("sec_updates_hint"), `<div class="rows">${rows}</div>`);
+}
 
-  const modules = scan.modules
-    .filter((m) => !PROTECTED.includes(m.id))
-    .sort((a, b) => b.bytes - a.bytes)
-    .map((m) => {
-      const e = moduleEntry(m.id);
-      return row({ attr: `data-module="${esc(m.id)}"`, checked: plan.modules.includes(m.id), title: info(e).title, what: info(e).what, effect: info(e).effect, risk: e.risk, bytes: m.bytes, meta: m.id });
+function renderModules(): string {
+  const items = removable();
+  const selected = items.filter((m) => plan.modules.includes(m.id));
+  const groups = (Object.keys(GROUPS) as GroupId[])
+    .map((g) => ({ g, items: items.filter((m) => groupOf(m.id) === g).sort((a, b) => b.bytes - a.bytes) }))
+    .filter((x) => x.items.length > 0);
+  const rows = groups
+    .map(({ g, items }) => {
+      const on = items.filter((m) => plan.modules.includes(m.id)).length;
+      const header = `<div class="group">
+        <label class="switch"><input type="checkbox" data-group="${g}" ${on === items.length ? "checked" : ""} ${on > 0 && on < items.length ? 'data-mixed="1"' : ""}><span></span></label>
+        <span>${t(`group_${g}` as Key)}</span><span class="size">${fmt(sum(items))}</span>
+      </div>`;
+      return header + items.map((m) => row({ attr: `data-module="${esc(m.id)}"`, checked: plan.modules.includes(m.id), title: info(moduleEntry(m.id)).title, what: info(moduleEntry(m.id)).what, effect: info(moduleEntry(m.id)).effect, risk: moduleEntry(m.id).risk, bytes: m.bytes, meta: m.id })).join("");
     })
     .join("");
+  const toolbar = `<div class="toolbar"><span class="hint">${t("modules_selected", { n: selected.length, total: items.length, size: fmt(sum(selected)) })}</span>
+    <div class="btns">${(["none", "safe", "all"] as const).map((m) => `<button type="button" class="small" data-modules="${m}">${t(`modules_${m}`)}</button>`).join("")}</div></div>`;
   const kept = scan.modules.filter((m) => PROTECTED.includes(m.id)).map((m) => m.id);
-  const modulesNote = (plan.updater || plan.modules.length === 0 ? "" : `<p class="note">${t("modules_comeback")}</p>`) + (kept.length ? `<p class="hint">${t("modules_protected", { list: kept.join(", ") })}</p>` : "");
+  const notes = (plan.updater || plan.modules.length === 0 ? "" : note("note", t("modules_comeback"))) + (kept.length ? note("info", t("modules_protected", { list: kept.join(", ") })) : "");
+  return card("puzzle", t("sec_modules"), t("sec_modules_hint"), toolbar + `<div class="rows">${rows}</div>` + notes);
+}
 
-  const locales = `<div class="locales">${scan.locales
-    .slice()
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .map((l) => {
-      const req = l.id === "en-US";
-      const keep = req || !plan.locales.includes(l.id);
-      return `<label class="loc${keep ? " on" : ""}"><input type="checkbox" data-locale="${esc(l.id)}" ${keep ? "checked" : ""} ${req ? "disabled" : ""}><span>${esc(l.id)}</span><small>${req ? t("locales_required") : fmt(l.bytes)}</small></label>`;
-    })
-    .join("")}</div>`;
+function renderLocales(): string {
+  const locs = scan.locales.slice().sort((a, b) => a.id.localeCompare(b.id));
+  const isKept = (l: Item) => l.id === "en-US" || !plan.locales.includes(l.id);
+  const kept = locs.filter(isKept);
+  const removed = locs.length - kept.length;
+  const chip = (l: Item) => {
+    const req = l.id === "en-US";
+    return `<label class="loc${isKept(l) ? " on" : ""}"><input type="checkbox" data-locale="${esc(l.id)}" ${isKept(l) ? "checked" : ""} ${req ? "disabled" : ""}><span>${esc(l.id)}</span><small>${req ? t("locales_required") : fmt(l.bytes)}</small></label>`;
+  };
+  const body = `${details("locales", "locales-wrap")}
+    <summary>
+      <span class="kept">${kept.map((l) => `<span class="chip chip-accent">${esc(l.id)}${l.id === "en-US" ? ` · ${t("locales_required")}` : ""}</span>`).join("")}</span>
+      <span class="chip more">${t("locales_more", { n: removed })}</span><span class="chip more less">${t("locales_less")}</span>
+    </summary>
+    <p class="hint">${t("locales_summary", { kept: kept.length, removed })}</p>
+    <div class="locales">${locs.map(chip).join("")}</div>
+  </details>`;
+  return card("globe", t("sec_locales"), t("sec_locales_hint"), body);
+}
 
-  const extras = scan.extras
-    .map((x) => {
-      const e = EXTRAS[x.id];
-      return row({ attr: `data-extra="${esc(x.id)}"`, checked: plan.extras.includes(x.id), title: info(e).title, what: info(e).what, effect: info(e).effect, risk: e.risk, bytes: x.bytes });
-    })
-    .join("");
+function renderExtras(): string {
+  const rows = scan.extras.map((x) => row({ attr: `data-extra="${esc(x.id)}"`, checked: plan.extras.includes(x.id), title: info(EXTRAS[x.id]).title, what: info(EXTRAS[x.id]).what, effect: info(EXTRAS[x.id]).effect, risk: EXTRAS[x.id].risk, bytes: x.bytes })).join("");
+  return card("file", t("sec_extras"), t("sec_extras_hint"), `<div class="rows">${rows}</div>`);
+}
 
-  app.innerHTML = renderStatus() + renderPresets() + section("sec_background", "sec_background_hint", background) + section("sec_updates", "sec_updates_hint", updates) + (has(scan.modules) ? section("sec_modules", "sec_modules_hint", modules, modulesNote) : "") + (has(scan.locales) ? section("sec_locales", "sec_locales_hint", locales) : "") + (has(scan.extras) ? section("sec_extras", "sec_extras_hint", extras) : "");
-
+function renderOptions() {
+  app.innerHTML = renderStatus() + renderPresets() + renderBackground() + renderUpdates() + (scan.modules.length ? renderModules() : "") + (scan.locales.length ? renderLocales() : "") + (scan.extras.length ? renderExtras() : "");
+  app.querySelectorAll<HTMLInputElement>("[data-mixed]").forEach((el) => (el.indeterminate = true));
   bar.hidden = false;
-  bar.innerHTML = `<div><strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong><span class="hint"> · ${t("bar_actions", { n: actionCount() })}</span></div>
-    <button type="button" class="primary" data-action="clean" ${actionCount() === 0 ? "disabled" : ""}>${t("clean")}</button>`;
+  bar.innerHTML = `<div class="bar-left">${icon("db", 18)}<strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong><span>•</span><span>${t("bar_actions", { n: actionCount() })}</span></div>
+    <button type="button" class="primary" data-action="clean" ${actionCount() === 0 ? "disabled" : ""}>${icon("sparkle", 16)}${t("clean")}</button>`;
 }
 
 function renderReview() {
@@ -261,51 +367,97 @@ function renderReview() {
     <p class="hint">${t("review_body")}</p>
     <ul>${lines.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>
     <p><strong>${t("bar_reclaim", { size: fmt(reclaimable()) })}</strong></p>
-    <div class="actions"><button type="button" data-action="cancel">${t("cancel")}</button><button type="button" class="primary" data-action="confirm">${t("confirm")}</button></div>`;
+    <div class="actions"><button type="button" data-action="cancel">${t("cancel")}</button><button type="button" class="primary" data-action="confirm">${icon("sparkle", 16)}${t("confirm")}</button></div>`;
   dialog.showModal();
 }
 
-function renderRunning() {
-  bar.hidden = true;
-  app.innerHTML = `<section class="card"><header><h2>${t("running_title")}</h2></header>
-    <ul class="steps">${steps.map((s) => `<li class="${s.status ?? "pending"}"><span class="dot"></span><span>${esc(s.label)}</span>${s.detail ? `<small class="mono">${esc(s.detail)}</small>` : ""}</li>`).join("")}</ul></section>`;
+function renderRunning(): string {
+  const list = steps.map((s) => `<li class="${s.status ?? "pending"}"><span class="dot"></span><span>${esc(s.label)}</span>${s.detail ? `<small class="mono">${esc(s.detail)}</small>` : ""}</li>`).join("");
+  return card("rocket", t("running_title"), "", `<ul class="steps">${list}</ul>`);
 }
 
-function renderDone() {
-  bar.hidden = true;
-  app.innerHTML = `<section class="card done">
-    <header><h2>${t("done_title")}</h2></header>
-    <p class="big">${t("done_freed", { size: fmt(report!.freed) })}</p>
-    ${report!.warnings.length ? `<p class="note">${t("done_warnings")}</p><ul class="warnings mono">${report!.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
-    <p class="hint">${t("done_note")}</p>
+function renderDone(): string {
+  const r = report!;
+  return card(
+    "check",
+    t("done_title"),
+    t("done_note"),
+    `<p class="big">${t("done_freed", { size: fmt(r.freed) })}</p>
+    ${r.warnings.length ? note("note", t("done_warnings")) + `<ul class="warnings mono">${r.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
     <div class="actions">
       <button type="button" data-action="rescan">${t("rescan")}</button>
       ${scan.latest_exe ? `<button type="button" class="primary" data-action="launch">${t("launch")}</button>` : ""}
-    </div>
-  </section>`;
+    </div>`,
+  );
+}
+
+function renderSettings(): string {
+  const langs: [string, string][] = [
+    ["en", "English"],
+    ["fr", "Français"],
+  ];
+  const presets = PRESET_IDS.map((p): [string, string] => [p, t(`preset_${p}` as Key)]);
+  const hasCustom = store.get("custom") !== null;
+  return (
+    card("globe", t("settings_lang"), t("settings_lang_hint"), seg(langs, "data-lang", getLang())) +
+    card("sliders", t("settings_default"), t("settings_default_hint"), seg(presets, "data-default", defaultPreset()) + `<p class="hint">${t(hasCustom ? "settings_custom_saved" : "settings_custom_none")}</p>`)
+  );
+}
+
+function renderAbout(): string {
+  return card(
+    "info",
+    "Discord Cleaner",
+    t("about_desc"),
+    `<dl class="kv">
+      <dt>${t("about_version")}</dt><dd>${esc(version ? `v${version}` : "—")}</dd>
+      <dt>${t("about_license")}</dt><dd>MIT</dd>
+      <dt>${t("about_source")}</dt><dd><button type="button" class="small" data-action="github">${t("github")}</button></dd>
+    </dl>
+    <p class="hint">${t("about_based")}</p>
+    ${note("info", t("about_undo"))}`,
+  );
+}
+
+function defaultPreset(): Preset {
+  const p = store.get<Preset>("profile");
+  return p && PRESET_IDS.includes(p) ? p : "balanced";
 }
 
 function render() {
-  document.getElementById("tagline")!.textContent = t("tagline");
-  document.getElementById("lang")!.textContent = t("lang_switch");
-  document.getElementById("gh")!.textContent = t("github");
+  document.querySelectorAll<HTMLElement>("[data-t]").forEach((el) => (el.textContent = t(el.dataset.t as Key)));
+  document.querySelectorAll<HTMLElement>("[data-page]").forEach((el) => el.classList.toggle("on", el.dataset.page === page));
+  const head: Record<Page, [string, string]> = {
+    cleaner: ["Discord Cleaner", t("subtitle")],
+    settings: [t("nav_settings"), t("nav_settings_sub")],
+    about: [t("nav_about"), t("nav_about_sub")],
+  };
+  title.textContent = head[page][0];
+  subtitle.textContent = head[page][1];
+  bar.hidden = true;
+  if (page === "settings") {
+    app.innerHTML = renderSettings();
+    return;
+  }
+  if (page === "about") {
+    app.innerHTML = renderAbout();
+    return;
+  }
   switch (view) {
     case "loading":
-      bar.hidden = true;
       app.innerHTML = `<div class="center"><div class="spinner"></div><p>${t("scanning")}</p></div>`;
       break;
     case "notfound":
-      bar.hidden = true;
-      app.innerHTML = `<section class="card center"><h2>${t("notfound_title")}</h2><p class="hint">${t("notfound_body", { path: "%LOCALAPPDATA%\\Discord" })}</p><button type="button" class="primary" data-action="rescan">${t("rescan")}</button></section>`;
+      app.innerHTML = `<div class="center"><h2>${t("notfound_title")}</h2><p class="hint">${t("notfound_body", { path: "%LOCALAPPDATA%\\Discord" })}</p><button type="button" class="primary" data-action="rescan">${t("rescan")}</button></div>`;
       break;
     case "options":
       renderOptions();
       break;
     case "running":
-      renderRunning();
+      app.innerHTML = renderRunning();
       break;
     case "done":
-      renderDone();
+      app.innerHTML = renderDone();
       break;
   }
 }
@@ -319,7 +471,7 @@ async function load() {
   if (!scan.root) {
     view = "notfound";
   } else {
-    applyPreset("balanced");
+    applyPreset(defaultPreset());
     view = "options";
   }
   render();
@@ -350,54 +502,77 @@ async function runPlan() {
 
 const toggle = (list: string[], id: string, on: boolean) => (on ? (list.includes(id) ? list : [...list, id]) : list.filter((x) => x !== id));
 
+document.addEventListener(
+  "toggle",
+  (ev) => {
+    const d = ev.target;
+    if (d instanceof HTMLDetailsElement && d.dataset.key) d.open ? opened.add(d.dataset.key) : opened.delete(d.dataset.key);
+  },
+  true,
+);
+
 document.addEventListener("change", (ev) => {
   const el = ev.target as HTMLInputElement;
   if (!(el instanceof HTMLInputElement) || view !== "options") return;
   const d = el.dataset;
   if (d.opt) (plan as unknown as Record<string, boolean>)[d.opt] = el.checked;
   else if (d.module) plan.modules = toggle(plan.modules, d.module, el.checked);
-  else if (d.extra) plan.extras = toggle(plan.extras, d.extra, el.checked);
+  else if (d.group) {
+    const ids = removable()
+      .filter((m) => groupOf(m.id) === d.group)
+      .map((m) => m.id);
+    plan.modules = el.checked ? [...new Set([...plan.modules, ...ids])] : plan.modules.filter((id) => !ids.includes(id));
+  } else if (d.extra) plan.extras = toggle(plan.extras, d.extra, el.checked);
   else if (d.locale) plan.locales = toggle(plan.locales, d.locale, !el.checked);
   else return;
   if (d.opt === "updater" && el.checked) plan.shortcut = true;
-  preset = "custom";
+  customize();
   render();
 });
 
 document.addEventListener("click", (ev) => {
-  const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-action],[data-preset]");
+  const btn = (ev.target as HTMLElement).closest<HTMLElement>("[data-action],[data-preset],[data-page],[data-lang],[data-default],[data-modules]");
   if (!btn) return;
-  if (btn.dataset.preset) {
-    applyPreset(btn.dataset.preset as PresetId);
-    render();
-    return;
+  const d = btn.dataset;
+  if (d.page) {
+    page = d.page as Page;
+  } else if (d.lang) {
+    setLang(d.lang as Lang);
+  } else if (d.default) {
+    store.set("profile", d.default);
+  } else if (d.preset) {
+    applyPreset(d.preset as Preset);
+  } else if (d.modules) {
+    plan.modules = removable()
+      .filter((m) => d.modules === "all" || (d.modules === "safe" && MODULES[m.id]?.risk === "safe"))
+      .map((m) => m.id);
+    customize();
+  } else {
+    switch (d.action) {
+      case "clean":
+        renderReview();
+        return;
+      case "cancel":
+        dialog.close();
+        return;
+      case "confirm":
+        dialog.close();
+        void runPlan();
+        return;
+      case "rescan":
+        void load();
+        return;
+      case "launch":
+        void invoke("launch", { exe: scan.latest_exe });
+        return;
+      case "github":
+        void openUrl(REPO);
+        return;
+    }
   }
-  switch (btn.dataset.action) {
-    case "clean":
-      renderReview();
-      break;
-    case "cancel":
-      dialog.close();
-      break;
-    case "confirm":
-      dialog.close();
-      void runPlan();
-      break;
-    case "rescan":
-      void load();
-      break;
-    case "launch":
-      void invoke("launch", { exe: scan.latest_exe });
-      break;
-    case "github":
-      void openUrl(REPO);
-      break;
-    case "lang":
-      setLang(getLang() === "en" ? "fr" : "en");
-      render();
-      break;
-  }
+  render();
 });
 
 setLang(getLang());
+void getVersion().then((v) => (version = v)).catch(() => {});
 void load();
